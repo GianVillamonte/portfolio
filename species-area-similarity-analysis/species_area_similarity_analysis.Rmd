@@ -1,0 +1,372 @@
+---
+title: "Species-area curves and vegetation-formation similarity"
+author: "Gianfranco Villamonte Cuneo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 9,
+  fig.height = 5.5
+)
+```
+
+# Objective
+
+This workflow demonstrates two biodiversity-monitoring analyses commonly used to evaluate flora survey data:
+
+1. **Species-area / species-accumulation curves**, used to assess how observed species richness increases with the number of evaluated sampling units.
+2. **Community similarity analysis**, used to compare vegetation formations based on species composition and relative cover.
+
+The original workflow was developed for applied environmental monitoring datasets. This public version uses a synthetic anonymized dataset that preserves the analytical structure while removing project-specific names, locations, and original observations.
+
+# Packages
+
+```{r packages}
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+packages <- c(
+  "readr", "dplyr", "tidyr", "purrr", "stringr",
+  "ggplot2", "viridis", "vegan", "tibble", "ggdendro"
+)
+
+missing_packages <- setdiff(packages, rownames(installed.packages()))
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages)
+}
+
+invisible(lapply(packages, library, character.only = TRUE))
+
+theme_set(theme_bw())
+```
+
+# Data
+
+The example dataset is structured in long format. Each row represents the relative cover of one species in one sampling unit.
+
+```{r import-data}
+data_file <- "data/flora_community_monitoring_example.csv"
+
+flora <- readr::read_csv(data_file, show_col_types = FALSE) %>%
+  mutate(
+    survey_year = as.integer(survey_year),
+    season = factor(season, levels = c("Wet season", "Dry season", "Winter")),
+    zone = factor(zone),
+    vegetation_formation = factor(vegetation_formation),
+    station_id = factor(station_id),
+    sampling_unit = factor(sampling_unit),
+    species = factor(species),
+    relative_cover = as.numeric(relative_cover)
+  )
+
+dplyr::glimpse(flora)
+```
+
+## Dataset summary
+
+```{r dataset-summary}
+flora %>%
+  summarise(
+    records = n(),
+    zones = n_distinct(zone),
+    vegetation_formations = n_distinct(vegetation_formation),
+    seasons = n_distinct(season),
+    sampling_units = n_distinct(sampling_unit),
+    species = n_distinct(species)
+  )
+```
+
+```{r records-by-group}
+flora %>%
+  count(zone, vegetation_formation, season, name = "records") %>%
+  arrange(zone, vegetation_formation, season)
+```
+
+# Helper functions
+
+```{r helper-functions}
+make_community_matrix <- function(data, unit_col = sampling_unit, species_col = species, value_col = relative_cover) {
+  data %>%
+    group_by({{ unit_col }}, {{ species_col }}) %>%
+    summarise(value = sum({{ value_col }}, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(
+      names_from = {{ species_col }},
+      values_from = value,
+      values_fill = 0
+    ) %>%
+    arrange({{ unit_col }}) %>%
+    tibble::column_to_rownames(var = rlang::as_name(rlang::ensym(unit_col))) %>%
+    as.data.frame()
+}
+
+safe_file_name <- function(x) {
+  x %>%
+    stringr::str_replace_all("[^A-Za-z0-9]+", "_") %>%
+    stringr::str_replace_all("_+", "_") %>%
+    stringr::str_replace_all("^_|_$", "")
+}
+```
+
+# Species-accumulation curves
+
+Species-accumulation curves were calculated for each combination of zone, vegetation formation, and season. The curve estimates the cumulative number of species detected as sampling units are added.
+
+The workflow also estimates Chao-2 richness using `vegan::specpool()`, which provides a non-parametric estimate of total species richness based on incidence patterns across sampling units.
+
+```{r species-area-loop}
+curve_groups <- flora %>%
+  distinct(zone, vegetation_formation, season) %>%
+  arrange(zone, vegetation_formation, season)
+
+species_area_results <- list()
+curve_plots <- list()
+
+for (i in seq_len(nrow(curve_groups))) {
+  current_group <- curve_groups[i, ]
+
+  group_data <- flora %>%
+    filter(
+      zone == current_group$zone,
+      vegetation_formation == current_group$vegetation_formation,
+      season == current_group$season
+    )
+
+  community_matrix <- make_community_matrix(group_data)
+
+  if (nrow(community_matrix) < 2 || ncol(community_matrix) < 2) {
+    next
+  }
+
+  accumulation <- vegan::specaccum(community_matrix, method = "exact")
+  estimators <- vegan::specpool(community_matrix)
+
+  accumulation_df <- tibble(
+    sampling_units = accumulation$sites,
+    richness = accumulation$richness,
+    sd = accumulation$sd
+  )
+
+  observed_richness <- tail(accumulation$richness, 1)
+  chao2 <- estimators$chao
+  r_squared <- summary(lm(richness ~ sampling_units, data = accumulation_df))$r.squared
+
+  plot_title <- paste(
+    current_group$zone,
+    current_group$vegetation_formation,
+    current_group$season,
+    sep = " | "
+  )
+
+  curve_plot <- ggplot(accumulation_df, aes(x = sampling_units, y = richness)) +
+    geom_ribbon(aes(ymin = richness - 2 * sd, ymax = richness + 2 * sd), alpha = 0.20) +
+    geom_line(linewidth = 1) +
+    geom_hline(yintercept = chao2, linetype = "dashed") +
+    annotate(
+      "text",
+      x = max(accumulation_df$sampling_units) * 0.80,
+      y = observed_richness * 0.95,
+      label = paste0("S(obs) = ", round(observed_richness, 1))
+    ) +
+    annotate(
+      "text",
+      x = max(accumulation_df$sampling_units) * 0.80,
+      y = chao2 * 1.03,
+      label = paste0("Chao-2 = ", round(chao2, 1))
+    ) +
+    annotate(
+      "text",
+      x = max(accumulation_df$sampling_units) * 0.80,
+      y = min(accumulation_df$richness),
+      label = paste0("R² = ", round(r_squared, 3))
+    ) +
+    labs(
+      title = plot_title,
+      x = "Sampling units evaluated",
+      y = "Cumulative species richness"
+    ) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      axis.title = element_text(face = "bold")
+    )
+
+  curve_plots[[i]] <- curve_plot
+
+  output_name <- paste0(
+    "outputs/species_area_curves/species_area_",
+    safe_file_name(plot_title),
+    ".png"
+  )
+
+  ggsave(output_name, curve_plot, width = 9, height = 5.5, dpi = 300)
+
+  species_area_results[[i]] <- tibble(
+    zone = as.character(current_group$zone),
+    vegetation_formation = as.character(current_group$vegetation_formation),
+    season = as.character(current_group$season),
+    sampling_units = nrow(community_matrix),
+    species_columns = ncol(community_matrix),
+    observed_richness = observed_richness,
+    chao2 = chao2,
+    r_squared = r_squared
+  )
+}
+
+species_area_summary <- bind_rows(species_area_results) %>%
+  arrange(zone, vegetation_formation, season)
+
+readr::write_csv(species_area_summary, "outputs/tables/species_area_summary.csv")
+
+species_area_summary
+```
+
+## Example species-accumulation curve
+
+```{r example-curve, fig.height=5.5}
+curve_plots[[which(!purrr::map_lgl(curve_plots, is.null))[1]]]
+```
+
+# Community similarity analysis
+
+Community similarity was calculated between vegetation formations within each zone and season. The workflow aggregates relative cover by vegetation formation and species, then computes Jaccard dissimilarity using `vegan::vegdist()`.
+
+The dendrograms use average-linkage hierarchical clustering. For visualization, the y-axis is shown as similarity, where higher values indicate more similar species composition among vegetation formations.
+
+```{r similarity-loop}
+similarity_groups <- flora %>%
+  distinct(zone, season) %>%
+  arrange(zone, season)
+
+similarity_results <- list()
+dendrogram_plots <- list()
+
+for (i in seq_len(nrow(similarity_groups))) {
+  current_group <- similarity_groups[i, ]
+
+  group_data <- flora %>%
+    filter(zone == current_group$zone, season == current_group$season) %>%
+    group_by(vegetation_formation, species) %>%
+    summarise(relative_cover = sum(relative_cover, na.rm = TRUE), .groups = "drop") %>%
+    tidyr::pivot_wider(
+      names_from = species,
+      values_from = relative_cover,
+      values_fill = 0
+    ) %>%
+    arrange(vegetation_formation)
+
+  if (nrow(group_data) < 2 || ncol(group_data) < 3) {
+    next
+  }
+
+  community_matrix <- group_data %>%
+    tibble::column_to_rownames("vegetation_formation") %>%
+    as.data.frame()
+
+  community_matrix <- community_matrix[rowSums(community_matrix) > 0, , drop = FALSE]
+
+  if (nrow(community_matrix) < 2) {
+    next
+  }
+
+  jaccard_dissimilarity <- vegan::vegdist(community_matrix, method = "jaccard")
+  similarity_matrix <- 1 - as.matrix(jaccard_dissimilarity)
+  diag(similarity_matrix) <- 1
+
+  group_label <- paste(current_group$zone, current_group$season, sep = " | ")
+  table_name <- paste0("outputs/tables/jaccard_similarity_", safe_file_name(group_label), ".csv")
+  readr::write_csv(as.data.frame(similarity_matrix) %>% tibble::rownames_to_column("vegetation_formation"), table_name)
+
+  cluster <- hclust(jaccard_dissimilarity, method = "average")
+  dendro <- ggdendro::dendro_data(cluster, type = "rectangle")
+
+  dendrogram_plot <- ggplot() +
+    geom_segment(
+      data = dendro$segments,
+      aes(x = x, y = y, xend = xend, yend = yend),
+      linewidth = 0.8
+    ) +
+    geom_text(
+      data = dendro$labels,
+      aes(x = x, y = y, label = label),
+      angle = 90,
+      hjust = -0.15,
+      size = 3
+    ) +
+    scale_y_reverse(
+      breaks = seq(0, 1, by = 0.2),
+      labels = function(x) round(1 - x, 2),
+      expand = expansion(mult = c(0.05, 0.20))
+    ) +
+    labs(
+      title = paste("Vegetation-formation similarity:", group_label),
+      x = NULL,
+      y = "Jaccard similarity"
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      plot.title = element_text(face = "bold"),
+      axis.title.y = element_text(face = "bold")
+    )
+
+  dendrogram_plots[[i]] <- dendrogram_plot
+
+  output_name <- paste0(
+    "outputs/similarity_dendrograms/dendrogram_",
+    safe_file_name(group_label),
+    ".png"
+  )
+
+  ggsave(output_name, dendrogram_plot, width = 8, height = 6, dpi = 300)
+
+  similarity_results[[i]] <- tibble(
+    zone = as.character(current_group$zone),
+    season = as.character(current_group$season),
+    vegetation_formations = nrow(community_matrix),
+    species_columns = ncol(community_matrix),
+    mean_pairwise_similarity = mean(similarity_matrix[upper.tri(similarity_matrix)], na.rm = TRUE)
+  )
+}
+
+similarity_summary <- bind_rows(similarity_results) %>%
+  arrange(zone, season)
+
+readr::write_csv(similarity_summary, "outputs/tables/similarity_summary.csv")
+
+similarity_summary
+```
+
+## Example dendrogram
+
+```{r example-dendrogram, fig.height=6}
+dendrogram_plots[[which(!purrr::map_lgl(dendrogram_plots, is.null))[1]]]
+```
+
+# Interpretation notes
+
+Species-accumulation curves are useful for assessing whether the sampling effort is approaching an asymptote. Curves that continue to rise steeply suggest that additional sampling units could reveal more species. Curves that flatten suggest that survey effort has captured a larger proportion of the local flora.
+
+Similarity dendrograms provide a compact way to compare vegetation formations based on community composition. In applied monitoring, this can help identify whether vegetation formations are floristically distinct or whether some formations share similar species-cover profiles.
+
+# Outputs generated by this workflow
+
+When the R Markdown file is run, it generates:
+
+- species-accumulation curves in `outputs/species_area_curves/`
+- similarity dendrograms in `outputs/similarity_dendrograms/`
+- summary CSV tables in `outputs/tables/`
+
+# Reproducibility information
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```

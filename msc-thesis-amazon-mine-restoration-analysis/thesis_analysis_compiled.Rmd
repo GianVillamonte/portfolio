@@ -1,0 +1,1129 @@
+---
+title: "Forest Recruitment in Restored Amazonian Mine Lands"
+subtitle: "Reproducible mixed-effects modelling workflow"
+author: "Gianfranco Villamonte Cuneo"
+date: "Wageningen University & Research - MSc Thesis, 2020"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+## 1. Analytical objective
+
+This R Markdown file reorganises the original thesis scripts into the same analytical sequence reported in the thesis: data preparation, exploratory checks, transformations and standardisation, model diagnostics, mixed-effects model selection, final models, and visualisation of significant results.
+
+The thesis assessed natural tree recruitment in restored Amazonian mine lands. Recruitment success was represented by four response variables:
+
+1. recruit species richness;
+2. recruit species composition axis 1;
+3. recruit species composition axis 2;
+4. recruit density.
+
+The report states that linear mixed-effects models were used because plots were grouped by mines, with mine included as a random effect. Continuous variables were transformed where needed, then standardised to make coefficient magnitudes comparable.
+
+## 2. Packages and reusable functions
+
+The original scripts installed packages inside the analysis file. Installation commands are not run automatically. Install missing packages once, then load them here.
+
+```{r libraries}
+library(nlme)
+library(lme4)
+library(lmerTest)
+library(MuMIn)
+library(Hmisc)
+library(ggplot2)
+library(readxl)
+library(dplyr)
+library(tibble)
+library(forcats)
+
+# Resolve input files robustly. When knitting from RStudio, the working directory
+# is not always the same folder as the Rmd file, so direct file names can fail.
+find_input_file <- function(filename) {
+  input_file <- tryCatch(knitr::current_input(), error = function(e) NULL)
+  input_dir <- if (!is.null(input_file) && nzchar(input_file)) dirname(normalizePath(input_file, mustWork = FALSE)) else getwd()
+
+  candidates <- unique(c(
+    filename,
+    file.path(getwd(), filename),
+    file.path(input_dir, filename),
+    file.path(input_dir, "data", filename),
+    file.path(getwd(), "data", filename)
+  ))
+
+  hits <- candidates[file.exists(candidates)]
+  if (length(hits) > 0) return(hits[[1]])
+
+  stop(
+    "Required input file not found: ", filename, "\n",
+    "Place it in the same folder as this Rmd, in a data/ subfolder, or set the knitting working directory to the project folder.\n",
+    "Current working directory: ", getwd(),
+    call. = FALSE
+  )
+}
+
+soil_data_file <- find_input_file("soil_thesis_data.xlsx")
+estimates_file <- find_input_file("estimates_errors.xlsx")
+
+# Robust exploratory helpers. These avoid knit failures when Excel imports a
+# numeric-looking column as text or when missing values are present.
+as_numeric_vector <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  suppressWarnings(as.numeric(x))
+}
+
+safe_hist <- function(x, main, xlab) {
+  x_num <- as_numeric_vector(x)
+  x_num <- x_num[is.finite(x_num)]
+  if (length(x_num) == 0) {
+    message("Skipping histogram for '", main, "': no numeric values available.")
+    return(invisible(NULL))
+  }
+  hist(x_num, main = main, xlab = xlab)
+}
+
+safe_shapiro <- function(x) {
+  x_num <- as_numeric_vector(x)
+  x_num <- x_num[is.finite(x_num)]
+  if (length(x_num) < 3 || length(x_num) > 5000) {
+    message("Skipping Shapiro test: requires between 3 and 5000 numeric observations.")
+    return(invisible(NULL))
+  }
+  shapiro.test(x_num)
+}
+
+```
+
+The original `functions.R` script defined a VIF function for `lme` objects and a general GVIF helper adapted from Zuur et al. (2009). These are used in the model-checking stage.
+
+```{r vif-functions}
+vif.lme <- function(fit) {
+  # Adapted from rms::vif for nlme::lme objects.
+  v <- vcov(fit)
+  nam <- names(fixef(fit))
+
+  # Exclude intercepts.
+  ns <- sum(1 * (nam == "Intercept" | nam == "(Intercept)"))
+  if (ns > 0) {
+    v <- v[-(1:ns), -(1:ns), drop = FALSE]
+    nam <- nam[-(1:ns)]
+  }
+
+  d <- diag(v)^0.5
+  v <- diag(solve(v / (d %o% d)))
+  names(v) <- nam
+  v
+}
+
+corvif <- function(dataz) {
+  # General VIF/GVIF helper from the original functions.R script.
+  dataz <- as.data.frame(dataz)
+  form <- formula(paste("fooy ~ ", paste(strsplit(names(dataz), " "), collapse = " + ")))
+  dataz <- data.frame(fooy = 1, dataz)
+  lm_mod <- lm(form, dataz)
+
+  cat("\n\nVariance inflation factors\n\n")
+  print(myvif(lm_mod))
+}
+
+myvif <- function(mod) {
+  v <- vcov(mod)
+  assign <- attributes(model.matrix(mod))$assign
+
+  if (names(coefficients(mod)[1]) == "(Intercept)") {
+    v <- v[-1, -1]
+    assign <- assign[-1]
+  } else {
+    warning("No intercept: VIFs may not be sensible.")
+  }
+
+  terms <- labels(terms(mod))
+  n.terms <- length(terms)
+  if (n.terms < 2) stop("The model contains fewer than 2 terms")
+
+  R <- cov2cor(v)
+  detR <- det(R)
+  result <- matrix(0, n.terms, 3)
+  rownames(result) <- terms
+  colnames(result) <- c("GVIF", "Df", "GVIF^(1/2Df)")
+
+  for (term in 1:n.terms) {
+    subs <- which(assign == term)
+    result[term, 1] <- det(as.matrix(R[subs, subs])) *
+      det(as.matrix(R[-subs, -subs])) / detR
+    result[term, 2] <- length(subs)
+  }
+
+  if (all(result[, 2] == 1)) {
+    result <- data.frame(GVIF = result[, 1])
+  } else {
+    result[, 3] <- result[, 1]^(1 / (2 * result[, 2]))
+  }
+
+  invisible(result)
+}
+```
+
+## 3. Data import and variable mapping
+
+The thesis data were collected in 86 monitoring plots. The response variables describe natural recruits, while the explanatory variables represent management, site conditions, planted-tree community structure, soil properties, and surrounding forest context.
+
+The species-composition and soil-gradient axes were calculated outside R before modelling. In the thesis report, species composition was ordinated with PCoA using Bray-Curtis dissimilarity in Canoco 5, and soil properties were ordinated with PCA in Canoco 5. The resulting axes were imported into the modelling dataset.
+
+```{r data-load}
+data <- read_excel(soil_data_file, sheet = "canopy")
+
+# The original scripts refer to `mature_all_density`, but the uploaded workbook
+# stores this predictor as `planted_density`. Create an alias so the
+# code keeps the terminology used in the original model scripts.
+if (!"mature_all_density" %in% names(data) && "planted_density" %in% names(data)) {
+  data <- data %>% mutate(mature_all_density = planted_density)
+}
+
+# Location data
+mine <- data$mine
+area <- data$area
+plot <- data$plot
+
+# Site characteristics
+mine_zone <- data$mine_area
+age <- data$planting_age2019
+canopy <- data$canopy_closure
+litter <- data$litter_depth
+soil1 <- data$soil_pca1
+soil2 <- data$soil_pca2
+
+# Recruit data
+r12S <- data$recruits12_S
+r12dens <- data$recruits12_density
+r12_sc1 <- data$recruits12_sc1
+r12_sc2 <- data$recruits12_sc2
+
+# Mature planted-tree data
+pdens <- data$planted_density
+mat_allS <- data$mature_all_S
+mat_alldens <- data$mature_all_density
+mat_allsc1 <- data$mature_all_sc1
+mat_allsc2 <- data$mature_all_sc2
+
+# Surrounding forests
+sf_area <- data$area_sf
+ogf_area <- data$area_ogf
+
+# Soil variables used for interpretation of the PCA axes
+clay <- data$Clay
+pH <- data$pH
+phosphorus <- data$P
+sand <- data$Sand
+magnesium <- data$Mg
+calcium <- data$Ca
+cations <- magnesium + calcium
+
+# Treat mine zone as a categorical predictor.
+data <- data %>%
+  mutate(
+    mine = as.factor(mine),
+    area = as.factor(area),
+    plot = as.factor(plot),
+    mine_zone = as.factor(mine_area)
+  )
+```
+
+## 4. Exploratory checks
+
+The original analysis checked summaries, histograms and normality tests before deciding on transformations. The main purpose was to identify skewed variables and variables bounded as percentages or proportions.
+
+```{r exploratory-checks, fig.height=7}
+# Location data
+summary(mine)
+summary(area)
+summary(plot)
+
+# Site characteristics
+summary(mine_zone)
+safe_hist(age, main = "Successional age", xlab = "Years since planting")
+safe_hist(canopy, main = "Canopy closure", xlab = "Canopy closure (%)")
+safe_hist(litter, main = "Litter depth", xlab = "Litter depth (cm)")
+safe_hist(soil1, main = "Soil PCA axis 1", xlab = "Soil 1")
+safe_hist(soil2, main = "Soil PCA axis 2", xlab = "Soil 2")
+
+# Recruit response variables
+safe_shapiro(r12S)
+safe_hist(r12S, main = "Recruit species richness", xlab = "Species richness")
+safe_hist(r12dens, main = "Recruit density", xlab = "Recruits per hectare")
+safe_hist(r12_sc1, main = "Recruit PCoA 1", xlab = "Recruit PCoA 1")
+safe_hist(r12_sc2, main = "Recruit PCoA 2", xlab = "Recruit PCoA 2")
+
+# Planted-tree predictors
+safe_shapiro(pdens)
+safe_hist(pdens, main = "Planted tree density", xlab = "Planted trees per hectare")
+safe_hist(mat_allS, main = "Mature planted species richness", xlab = "Species richness")
+safe_hist(mat_alldens, main = "Mature planted tree density", xlab = "Trees per hectare")
+safe_hist(mat_allsc1, main = "Planted PCoA 1", xlab = "Planted PCoA 1")
+safe_hist(mat_allsc2, main = "Planted PCoA 2", xlab = "Planted PCoA 2")
+
+# Surrounding forest area
+safe_hist(sf_area, main = "Secondary forest area", xlab = "Area within 500 m")
+safe_hist(ogf_area, main = "Old-growth forest area", xlab = "Area within 500 m")
+```
+
+## 5. Transformations and standardisation
+
+The report states that continuous variables were transformed to improve normality and then standardised before modelling. The code below follows the original `data_rescale.R` file. Transformed variables are added to `data` so each model is explicit and reproducible.
+
+```{r data-transformations}
+data <- data %>%
+  mutate(
+    # Site characteristics
+    age = as.numeric(scale(log(planting_age2019))),
+    canopy = as.numeric(scale(asin(sqrt(canopy_closure / 100)))),
+    litter = as.numeric(scale(litter_depth)),
+    soil1 = as.numeric(scale(soil_pca1)),
+    soil2 = as.numeric(scale(soil_pca2)),
+
+    # Recruit response variables
+    r12S = as.numeric(scale(log(recruits12_S + 3))),
+    r12dens = as.numeric(scale(recruits12_density^(1 / 4))),
+    r12_sc1 = as.numeric(scale(recruits12_sc1)),
+    r12_sc2 = as.numeric(scale(sqrt(recruits12_sc2 + 1.5))),
+
+    # Mature planted-tree variables
+    pdens = as.numeric(scale(sqrt(planted_density + 1000))),
+    mat_allS = as.numeric(scale(mature_all_S)),
+    mat_alldens = as.numeric(scale(mature_all_density)),
+    mat_allsc1 = as.numeric(scale(mature_all_sc1)),
+    mat_allsc2 = as.numeric(scale(mature_all_sc2)),
+
+    # Surrounding forest area
+    sf_area = as.numeric(scale(sqrt(area_sf))),
+    ogf_area = as.numeric(scale(sqrt(area_ogf)))
+  )
+```
+
+## 6. Model-checking workflow
+
+Before fitting the response-specific mixed models, the original analysis checked correlations, residual structure and multicollinearity.
+
+```{r full-model-checks}
+# Spearman correlations among numeric variables.
+chao_cor <- cor(data %>% select(where(is.numeric)), method = "spearman", use = "pairwise.complete.obs")
+round(chao_cor[1:8, 1:8], 2)
+
+# Heteroscedasticity and residual-pattern check using a broad linear model.
+Reg_lm <- lm(
+  r12dens ~ age + soil1 + soil2 + mine_zone + litter + canopy +
+    mat_alldens + mat_allS + mat_allsc1 + mat_allsc2 + ogf_area + sf_area,
+  data = data,
+  na.action = na.omit
+)
+plot(Reg_lm)
+
+# VIF check using a broad mixed model.
+Reg_vif1 <- lme(
+  r12dens ~ age + soil1 + soil2 + mine_zone + litter + canopy +
+    mat_alldens + mat_allS + mat_allsc1 + mat_allsc2,
+  random = ~ 1 | mine,
+  data = data,
+  na.action = na.omit
+)
+vif.lme(Reg_vif1)
+```
+
+## 7. Random-effects structure
+
+For each response variable, the original scripts compared three structures:
+
+1. GLS model without random effects;
+2. LMM with a random intercept for mine;
+3. LMM with areas nested within mines.
+
+The thesis retained mine as the random factor, accounting for the grouped sampling design while avoiding an unnecessarily complex random-effects structure.
+
+```{r random-effects-recruit-density}
+MD1 <- formula(
+  r12dens ~ age +
+    mat_alldens * soil1 +
+    mat_alldens * soil2 +
+    mat_alldens * mine_zone +
+    mat_alldens * litter +
+    mat_alldens * canopy
+)
+
+MD1_gls <- gls(MD1, data = data)
+MD1_lme_mine <- lme(MD1, random = ~ 1 | mine, data = data, method = "REML")
+MD1_lme_minea <- lme(MD1, random = ~ 1 | mine / area, data = data, method = "REML")
+
+anova.lme(MD1_gls, MD1_lme_mine, MD1_lme_minea)
+```
+
+The same comparison was performed for species richness and the two recruit-composition axes.
+
+```{r random-effects-other-responses}
+MS1 <- formula(
+  r12S ~ age +
+    mat_alldens * soil1 + mat_allS * soil1 +
+    ogf_area * soil1 + sf_area * soil1 +
+    mat_alldens * soil2 + mat_allS * soil2 +
+    ogf_area * soil2 + sf_area * soil2 +
+    mat_alldens * mine_zone + mat_allS * mine_zone +
+    ogf_area * mine_zone + sf_area * mine_zone +
+    mat_alldens * litter + mat_allS * litter +
+    ogf_area * litter + sf_area * litter +
+    mat_alldens * canopy + mat_allS * canopy +
+    ogf_area * canopy + sf_area * canopy
+)
+
+MS1_gls <- gls(MS1, data = data)
+MS1_lme_mine <- lme(MS1, random = ~ 1 | mine, data = data, method = "REML")
+MS1_lme_minea <- lme(MS1, random = ~ 1 | mine / area, data = data, method = "REML")
+anova(MS1_gls, MS1_lme_mine, MS1_lme_minea)
+
+MSc1_1 <- formula(
+  r12_sc1 ~ age +
+    mat_alldens + mat_allsc1 + mat_allsc2 + sf_area + ogf_area +
+    soil1 + soil2 + mine_zone + litter + canopy +
+    mat_alldens * soil1 + mat_allsc1 * soil1 + mat_allsc2 * soil1 +
+    ogf_area * soil1 + sf_area * soil1 +
+    mat_alldens * soil2 + mat_allsc1 * soil2 + mat_allsc2 * soil2 +
+    ogf_area * soil2 + sf_area * soil2 +
+    mat_alldens * mine_zone + mat_allsc1 * mine_zone + mat_allsc2 * mine_zone +
+    ogf_area * mine_zone + sf_area * mine_zone +
+    mat_alldens * litter + mat_allsc1 * litter + mat_allsc2 * litter +
+    ogf_area * litter + sf_area * litter +
+    mat_alldens * canopy + mat_allsc1 * canopy + mat_allsc2 * canopy +
+    ogf_area * canopy + sf_area * canopy
+)
+
+MSc1_1_gls <- gls(MSc1_1, data = data)
+MSc1_1_lme_mine <- lme(MSc1_1, random = ~ 1 | mine, data = data, method = "REML")
+MSc1_1_lme_minea <- lme(MSc1_1, random = ~ 1 | mine / area, data = data, method = "REML")
+anova(MSc1_1_gls, MSc1_1_lme_mine, MSc1_1_lme_minea)
+
+MSc2_1 <- update(MSc1_1, r12_sc2 ~ .)
+MSc2_1_gls <- gls(MSc2_1, data = data)
+MSc2_1_lme_mine <- lme(MSc2_1, random = ~ 1 | mine, data = data, method = "REML")
+MSc2_1_lme_minea <- lme(MSc2_1, random = ~ 1 | mine / area, data = data, method = "REML")
+anova(MSc2_1_gls, MSc2_1_lme_mine, MSc2_1_lme_minea)
+```
+
+## 8. Candidate models, variable selection and final models
+
+Models were first fitted using maximum likelihood for model comparison and variable selection, then refitted using REML for final interpretation.
+
+### 8.1 Recruit species richness
+
+The report evaluated recruit species richness as a function of successional age, canopy closure, soil properties, planted community variables, surrounding forest area and mine-zone interactions.
+
+```{r species-richness-models}
+MS1_ML <- lme(MS1, random = ~ 1 | mine, data = data, method = "ML")
+coef(summary(MS1_ML))
+AIC(MS1_ML)
+
+MS2_ML <- lme(
+  r12S ~ age + ogf_area + soil1 + canopy +
+    mat_alldens:soil1 + ogf_area * soil1 +
+    mat_allS:soil2 +
+    ogf_area:mine_zone + sf_area:mine_zone +
+    mat_alldens:litter +
+    mat_alldens:canopy + ogf_area * canopy,
+  random = ~ 1 | mine,
+  data = data,
+  method = "ML"
+)
+coef(summary(MS2_ML))
+AIC(MS2_ML)
+r.squaredGLMM(MS2_ML)
+
+MS3_fix <- lmer(
+  r12S ~ age + ogf_area + soil1 + canopy +
+    mat_alldens:soil1 + ogf_area * soil1 +
+    mat_allS:soil2 +
+    ogf_area:mine_zone + sf_area:mine_zone +
+    mat_alldens:litter +
+    mat_alldens:canopy + ogf_area * canopy +
+    (1 | mine),
+  data = data,
+  REML = FALSE
+)
+
+MS_varselection <- step(
+  MS3_fix,
+  ddf = "Satterthwaite",
+  alpha.fixed = 0.05,
+  direction = "backward",
+  reduce.fixed = TRUE,
+  reduce.random = FALSE
+)
+MS_varselection
+
+MS_final <- lme(
+  r12S ~ mat_allS:soil2 +
+    canopy:mat_allsc2 +
+    canopy + age +
+    mat_allsc2:mine_zone +
+    mine_zone:ogf_area,
+  random = ~ 1 | mine,
+  data = data,
+  method = "REML"
+)
+
+coef(summary(MS_final))
+AIC(MS_final)
+r.squaredGLMM(MS_final)
+model.sel(MS1_ML, MS2_ML)
+std.coef(MS_final, partial.sd = TRUE)
+```
+
+### 8.2 Recruit species composition: PCoA axis 1
+
+Recruit PCoA 1 represented a gradient from *Myrcia splendens*-dominated recruit communities to *Psidium guianensis*-dominated recruit communities. The final model retained site age, planted-tree density, surrounding forest area, soil axis 1, mine-zone effects and interactions with planted composition and soil axis 2.
+
+```{r recruit-pcoa1-models}
+MSc1_1_ML <- lme(MSc1_1, random = ~ 1 | mine, data = data, method = "ML")
+coef(summary(MSc1_1_ML))
+AIC(MSc1_1_ML)
+
+MSc1_2_ML <- lme(
+  r12_sc1 ~ age + mat_alldens +
+    sf_area + ogf_area +
+    soil1 + mine_zone +
+    mat_alldens:soil2 +
+    mine_zone:mat_allsc2,
+  random = ~ 1 | mine,
+  data = data,
+  method = "ML"
+)
+coef(summary(MSc1_2_ML))
+AIC(MSc1_2_ML)
+r.squaredGLMM(MSc1_2_ML)
+
+MSc1_3_fix <- lmer(
+  r12_sc1 ~ age + mat_alldens +
+    sf_area + ogf_area +
+    soil1 + mine_zone +
+    mat_alldens:soil2 +
+    mine_zone:mat_allsc2 +
+    (1 | mine),
+  data = data,
+  REML = FALSE
+)
+
+MSc1_varselection <- step(
+  MSc1_3_fix,
+  ddf = "Satterthwaite",
+  alpha.fixed = 0.05,
+  direction = "backward",
+  reduce.fixed = TRUE,
+  reduce.random = FALSE
+)
+MSc1_varselection
+
+MSc1_final <- lme(
+  r12_sc1 ~ age + mat_alldens +
+    sf_area + ogf_area +
+    soil1 + mine_zone +
+    mat_alldens:soil2 +
+    mine_zone:mat_allsc2,
+  random = ~ 1 | mine,
+  data = data,
+  method = "REML"
+)
+
+coef(summary(MSc1_final))
+AIC(MSc1_final)
+r.squaredGLMM(MSc1_final)
+model.sel(MSc1_1_ML, MSc1_2_ML, MSc1_final)
+std.coef(MSc1_final, partial.sd = TRUE)
+```
+
+### 8.3 Recruit species composition: PCoA axis 2
+
+Recruit PCoA 2 represented a gradient associated with *Siparuna guianensis* and *Vismia guianensis* versus *Toulicia guianensis*. The final model retained secondary forest area, soil axis 1, and their interaction.
+
+```{r recruit-pcoa2-models}
+MSc2_1_ML <- lme(MSc2_1, random = ~ 1 | mine, data = data, method = "ML")
+coef(summary(MSc2_1_ML))
+AIC(MSc2_1_ML)
+
+MSc2_2_ML <- lme(
+  r12_sc2 ~ sf_area + soil1 + sf_area:soil1,
+  random = ~ 1 | mine,
+  data = data,
+  method = "ML"
+)
+coef(summary(MSc2_2_ML))
+AIC(MSc2_2_ML)
+r.squaredGLMM(MSc2_2_ML)
+
+MSc2_3_fix <- lmer(
+  r12_sc2 ~ sf_area + soil1 + mine_zone +
+    ogf_area:soil1 + sf_area:soil1 +
+    ogf_area:mine_zone + sf_area:mine_zone +
+    (1 | mine),
+  data = data,
+  REML = FALSE
+)
+
+MSc2_varselection <- step(
+  MSc2_3_fix,
+  ddf = "Satterthwaite",
+  alpha.fixed = 0.05,
+  direction = "backward",
+  reduce.fixed = TRUE,
+  reduce.random = FALSE
+)
+MSc2_varselection
+
+MSc2_final <- lme(
+  r12_sc2 ~ sf_area + soil1 + sf_area:soil1,
+  random = ~ 1 | mine,
+  data = data,
+  method = "REML"
+)
+
+coef(summary(MSc2_final))
+AIC(MSc2_final)
+r.squaredGLMM(MSc2_final)
+model.sel(MSc2_1_ML, MSc2_2_ML, MSc2_final)
+std.coef(MSc2_final, partial.sd = TRUE)
+```
+
+### 8.4 Recruit density
+
+Recruit density was modelled as a function of successional age, mine zone, soil properties, and interactions between planted tree density and light-related variables. The final model retained the two interactions highlighted in the thesis: planted tree density with litter depth, and planted tree density with canopy closure.
+
+```{r recruit-density-models}
+MD1_ML <- lme(MD1, random = ~ 1 | mine, data = data, method = "ML")
+coef(summary(MD1_ML))
+AIC(MD1_ML)
+
+MD2_ML <- lme(
+  r12dens ~ age + soil1 + mine_zone +
+    mat_alldens:litter + mat_alldens:canopy,
+  random = ~ 1 | mine,
+  data = data,
+  method = "ML"
+)
+coef(summary(MD2_ML))
+AIC(MD2_ML)
+r.squaredGLMM(MD2_ML)
+
+MD3_ML <- lmer(
+  r12dens ~ age +
+    mat_alldens * soil1 +
+    mat_alldens * soil2 +
+    mat_alldens * mine_zone +
+    mat_alldens * litter +
+    mat_alldens * canopy +
+    (1 | mine),
+  data = data,
+  REML = FALSE
+)
+summary(MD3_ML)
+r.squaredGLMM(MD3_ML)
+
+MD_varselection <- step(
+  MD3_ML,
+  ddf = "Satterthwaite",
+  alpha.fixed = 0.05,
+  direction = "backward",
+  reduce.fixed = TRUE,
+  reduce.random = FALSE
+)
+MD_varselection
+
+MD_final <- lme(
+  r12dens ~ age + soil1 + mine_zone +
+    mat_alldens:litter + mat_alldens:canopy,
+  random = ~ 1 | mine,
+  data = data,
+  method = "REML"
+)
+
+coef(summary(MD_final))
+AIC(MD_final)
+r.squaredGLMM(MD_final)
+model.sel(MD1_ML, MD2_ML, MD_final)
+std.coef(MD_final, partial.sd = TRUE)
+```
+
+## 9. Graphs: report-style figures plus reproducible model outputs
+
+The thesis graphs were not generated directly from the model objects in the modelling script. The original graph script reads final coefficient estimates and errors from `estimates_errors.xlsx`, then plots those archived values. This reproduces the report-style figures exactly, while the model objects above remain available as the reproducible analysis path.
+
+The workflow below therefore separates two outputs:
+
+1. **Report-style figures**: generated from `estimates_errors.xlsx`; these should match the figures used in the thesis/report.
+2. **Live model coefficient plots**: generated directly from the fitted `lme` objects; these are retained for transparency and may differ slightly because of model-selection, transformation, factor-reference or rounding differences.
+
+### 9.1 Helper functions for report-style coefficient plots
+
+```{r report-coefficient-plot-helper}
+read_report_coefficients <- function(sheet) {
+  read_excel(estimates_file, sheet = sheet) %>%
+    filter(!is.na(variables), !is.na(estimates), !is.na(errors)) %>%
+    mutate(
+      variables = trimws(as.character(variables)),
+      estimates = as.numeric(estimates),
+      errors = as.numeric(errors),
+      variables = factor(variables, levels = rev(unique(variables)))
+    )
+}
+
+plot_report_coefficients <- function(sheet, title, subtitle = NULL, xlim = NULL) {
+  coeff <- read_report_coefficients(sheet)
+
+  p <- ggplot(
+    coeff,
+    aes(
+      x = estimates,
+      y = variables,
+      xmin = estimates - errors,
+      xmax = estimates + errors
+    )
+  ) +
+    geom_vline(xintercept = 0, linewidth = 0.5) +
+    geom_point(aes(colour = estimates), size = 3) +
+    geom_errorbarh(height = 0.5, aes(colour = estimates), linewidth = 1.2) +
+    scale_colour_gradient2() +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = "coefficients",
+      y = NULL,
+      colour = "coefficients"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      axis.title.x = element_text(face = "bold"),
+      axis.text.y = element_text(face = "bold")
+    )
+
+  if (!is.null(xlim)) {
+    p <- p + coord_cartesian(xlim = xlim)
+  }
+
+  p
+}
+```
+
+### 9.2 Report-style final coefficient plots
+
+These figures use the archived final estimates and errors from `estimates_errors.xlsx`. Use these as the main figures because they follow the same logic as the original thesis graph workflow.
+
+#### Recruit species richness
+
+```{r report-richness-coefficients, fig.width=8, fig.height=5}
+plot_report_coefficients(
+  sheet = "richness",
+  title = "Significant drivers of recruit species richness",
+  subtitle = "Report-style coefficient plot using archived estimates and errors",
+  xlim = c(-1.5, 1.5)
+)
+```
+
+#### Recruit species composition: PCoA axis 1
+
+Positive coefficients indicate a shift toward *Psidium guianensis*-dominated recruit communities. Negative coefficients indicate a shift toward *Myrcia splendens*-dominated recruit communities.
+
+```{r report-sc1-coefficients, fig.width=8, fig.height=5}
+plot_report_coefficients(
+  sheet = "sc1",
+  title = "Significant drivers of recruit species composition: PCoA axis 1",
+  subtitle = "Positive values favour Psidium; negative values favour Myrcia",
+  xlim = c(-1.5, 1.5)
+)
+```
+
+#### Recruit species composition: PCoA axis 2
+
+Positive coefficients indicate a shift toward *Siparuna guianensis* and *Vismia guianensis*-dominated recruit communities. Negative coefficients indicate a shift toward *Toulicia guianensis*-dominated communities.
+
+```{r report-sc2-coefficients, fig.width=7, fig.height=4}
+plot_report_coefficients(
+  sheet = "sc2",
+  title = "Significant drivers of recruit species composition: PCoA axis 2",
+  subtitle = "Positive values favour Siparuna/Vismia; negative values favour Toulicia",
+  xlim = c(-1.0, 1.0)
+)
+```
+
+#### Recruit density
+
+```{r report-density-coefficients, fig.width=8, fig.height=4.5}
+plot_report_coefficients(
+  sheet = "density",
+  title = "Significant drivers of recruit density",
+  subtitle = "Report-style coefficient plot using archived estimates and errors",
+  xlim = c(-1.5, 1.5)
+)
+```
+
+### 9.3 Model fit summary from archived thesis outputs
+
+The archived `r2` sheet stores the marginal and conditional coefficients of explanation reported for each model.
+
+```{r report-r2-table}
+read_excel(estimates_file, sheet = "r2") %>%
+  mutate(
+    r2m = round(r2m, 3),
+    r2c = round(r2c, 3),
+    `mines effect` = round(`mines effect`, 3)
+  ) %>%
+  knitr::kable(
+    caption = "Archived marginal and conditional R² values for the final thesis models."
+  )
+```
+
+### 9.4 Live coefficient plots from the fitted model objects
+
+The following plots are generated directly from the `lme` model objects fitted in this Rmd. They are useful for reproducibility checks, but they are not the primary report-style figures. Differences from the archived figures can arise from stepwise-selection details, factor-reference levels, coefficient naming, package versions, or manual rounding in the thesis figure-preparation file.
+
+```{r live-coefficient-plot-helper}
+extract_lme_coefficients <- function(model, drop_intercept = TRUE) {
+  out <- as.data.frame(coef(summary(model))) %>%
+    rownames_to_column("variables") %>%
+    rename(
+      estimate = Value,
+      std_error = Std.Error,
+      df = DF,
+      t_value = `t-value`,
+      p_value = `p-value`
+    )
+
+  if (drop_intercept) {
+    out <- out %>% filter(variables != "(Intercept)")
+  }
+
+  out %>%
+    mutate(
+      variables = fct_inorder(variables),
+      variables = fct_rev(variables)
+    )
+}
+
+plot_live_coefficients <- function(model, title, subtitle = NULL, xlim = NULL) {
+  coeff <- extract_lme_coefficients(model)
+
+  p <- ggplot(
+    coeff,
+    aes(
+      x = estimate,
+      y = variables,
+      xmin = estimate - std_error,
+      xmax = estimate + std_error
+    )
+  ) +
+    geom_vline(xintercept = 0, linewidth = 0.5) +
+    geom_errorbarh(height = 0.4, aes(colour = estimate), linewidth = 1.1) +
+    geom_point(aes(colour = estimate), size = 3) +
+    scale_colour_gradient2() +
+    labs(
+      x = "Coefficient",
+      y = NULL,
+      colour = "Coefficient",
+      title = title,
+      subtitle = subtitle
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.y = element_text(face = "bold"))
+
+  if (!is.null(xlim)) {
+    p <- p + coord_cartesian(xlim = xlim)
+  }
+
+  p
+}
+```
+
+```{r live-coefficient-plots, fig.width=8, fig.height=5}
+plot_live_coefficients(
+  MS_final,
+  title = "Live model coefficients: recruit species richness",
+  subtitle = "Generated directly from MS_final; retained for reproducibility checking",
+  xlim = c(-1.5, 1.5)
+)
+
+plot_live_coefficients(
+  MSc1_final,
+  title = "Live model coefficients: recruit PCoA axis 1",
+  subtitle = "Generated directly from MSc1_final; retained for reproducibility checking",
+  xlim = c(-1.5, 1.5)
+)
+
+plot_live_coefficients(
+  MSc2_final,
+  title = "Live model coefficients: recruit PCoA axis 2",
+  subtitle = "Generated directly from MSc2_final; retained for reproducibility checking",
+  xlim = c(-1.0, 1.0)
+)
+
+plot_live_coefficients(
+  MD_final,
+  title = "Live model coefficients: recruit density",
+  subtitle = "Generated directly from MD_final; retained for reproducibility checking",
+  xlim = c(-1.5, 1.5)
+)
+```
+
+## 10. Curated interaction plots
+
+The original analysis included several interaction plots that were not all included in the main thesis report. Only the interactions retained in the final models are shown here. They help explain ecological mechanisms that are hard to interpret from coefficient plots alone.
+
+These plots use the raw, interpretable variables on the axes where possible. They are therefore explanatory visualisations, not replacements for the final mixed-effects models.
+
+```{r interaction-plot-helpers}
+make_tertile <- function(x, labels = c("Low", "Medium", "High")) {
+  x_num <- as_numeric_vector(x)
+  out <- rep(NA_character_, length(x_num))
+  ok <- is.finite(x_num)
+  if (sum(ok) >= 3) {
+    groups <- dplyr::ntile(x_num[ok], 3)
+    out[ok] <- labels[groups]
+  }
+  factor(out, levels = labels)
+}
+
+# Colour palettes are kept explicit for the interaction plots because the
+# original graphing script used visible group colours to distinguish fitted
+# relationships. Confidence bands are shown with geom_smooth(se = TRUE).
+interaction_palette_3 <- c("chartreuse", "chartreuse3", "darkgreen")
+
+mine_zone_palette <- c(
+  "Capped tailings" = "#1b9e77",
+  "Dry tailings" = "#d95f02",
+  "Mining floor" = "#7570b3",
+  "Washing plant" = "#66a61e",
+  "Wet tailings" = "#e7298a"
+)
+
+data <- data %>%
+  mutate(
+    planted_density_group = make_tertile(planted_density, c("Low planted density", "Medium planted density", "High planted density")),
+    planted_pcoa2_group = make_tertile(mature_all_sc2, c("Low planted PCoA2", "Medium planted PCoA2", "High planted PCoA2")),
+    planted_richness_group = make_tertile(mature_all_S, c("Low planted richness", "Medium planted richness", "High planted richness")),
+    secondary_forest_group = make_tertile(area_sf, c("Low secondary forest", "Medium secondary forest", "High secondary forest"))
+  )
+```
+
+### 10.1 Interactions retained in the recruit richness model
+
+The richness model retained interactions between canopy closure and planted PCoA2, mine zone and old-growth forest area, and soil axis 2 and planted richness.
+
+```{r interaction-richness-canopy-planted-pcoa2, fig.width=8, fig.height=5}
+ggplot(data, aes(x = canopy_closure, y = recruits12_S, colour = planted_pcoa2_group)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1, alpha = 0.20) +
+  labs(
+    title = "Recruit richness: canopy closure by planted PCoA2",
+    x = "Canopy closure (%)",
+    y = "Recruit species richness",
+    colour = "Planted PCoA2"
+  ) +
+  scale_colour_manual(values = interaction_palette_3, drop = FALSE) +
+  theme_minimal(base_size = 12)
+```
+
+```{r interaction-richness-ogf-mine-zone, fig.width=8, fig.height=5}
+ggplot(data, aes(x = area_ogf, y = recruits12_S, colour = mine_zone)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1, alpha = 0.20) +
+  labs(
+    title = "Recruit richness: old-growth forest area by mine zone",
+    x = "Old-growth forest area within 500 m",
+    y = "Recruit species richness",
+    colour = "Mine zone"
+  ) +
+  scale_colour_manual(values = mine_zone_palette, drop = FALSE) +
+  theme_minimal(base_size = 12)
+```
+
+```{r interaction-richness-soil2-planted-richness, fig.width=8, fig.height=5}
+ggplot(data, aes(x = soil_pca2, y = recruits12_S, colour = planted_richness_group)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1, alpha = 0.20) +
+  labs(
+    title = "Recruit richness: soil axis 2 by planted richness",
+    x = "Soil PCA axis 2 (pH and clay axis)",
+    y = "Recruit species richness",
+    colour = "Planted richness"
+  ) +
+  scale_colour_manual(values = interaction_palette_3, drop = FALSE) +
+  theme_minimal(base_size = 12)
+```
+
+### 10.2 Interactions retained in the recruit PCoA 1 model
+
+The PCoA 1 model retained interactions between planted density and soil axis 2, and between mine zone and planted PCoA2.
+
+```{r interaction-sc1-soil2-planted-density, fig.width=8, fig.height=5}
+ggplot(data, aes(x = soil_pca2, y = recruits12_sc1, colour = planted_density_group)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1, alpha = 0.20) +
+  labs(
+    title = "Recruit PCoA1: soil axis 2 by planted density",
+    x = "Soil PCA axis 2 (pH and clay axis)",
+    y = "Recruit PCoA axis 1",
+    colour = "Planted density"
+  ) +
+  scale_colour_manual(values = interaction_palette_3, drop = FALSE) +
+  theme_minimal(base_size = 12)
+```
+
+```{r interaction-sc1-pcoa2-mine-zone, fig.width=8, fig.height=5}
+ggplot(data, aes(x = mature_all_sc2, y = recruits12_sc1, colour = mine_zone)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1, alpha = 0.20) +
+  labs(
+    title = "Recruit PCoA1: planted PCoA2 by mine zone",
+    x = "Planted PCoA axis 2",
+    y = "Recruit PCoA axis 1",
+    colour = "Mine zone"
+  ) +
+  scale_colour_manual(values = mine_zone_palette, drop = FALSE) +
+  theme_minimal(base_size = 12)
+```
+
+### 10.3 Interaction retained in the recruit PCoA 2 model
+
+The PCoA 2 model retained the interaction between secondary forest area and soil axis 1.
+
+```{r interaction-sc2-soil1-secondary-forest, fig.width=8, fig.height=5}
+ggplot(data, aes(x = soil_pca1, y = recruits12_sc2, colour = secondary_forest_group)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1, alpha = 0.20) +
+  labs(
+    title = "Recruit PCoA2: soil axis 1 by secondary forest area",
+    x = "Soil PCA axis 1 (cation and sand axis)",
+    y = "Recruit PCoA axis 2",
+    colour = "Secondary forest area"
+  ) +
+  scale_colour_manual(values = interaction_palette_3, drop = FALSE) +
+  theme_minimal(base_size = 12)
+```
+
+### 10.4 Interactions retained in the recruit density model
+
+The density model retained two contrasting interactions: planted density with canopy closure, and planted density with litter depth.
+
+```{r interaction-density-canopy-planted-density, fig.width=8, fig.height=5}
+ggplot(data, aes(x = canopy_closure, y = recruits12_density / 1000, colour = planted_density_group)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1, alpha = 0.20) +
+  labs(
+    title = "Recruit density: canopy closure by planted density",
+    x = "Canopy closure (%)",
+    y = "Recruit density (1,000 recruits / ha)",
+    colour = "Planted density"
+  ) +
+  scale_colour_manual(values = interaction_palette_3, drop = FALSE) +
+  theme_minimal(base_size = 12)
+```
+
+```{r interaction-density-litter-planted-density, fig.width=8, fig.height=5}
+ggplot(data, aes(x = litter_depth, y = recruits12_density / 1000, colour = planted_density_group)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1, alpha = 0.20) +
+  labs(
+    title = "Recruit density: litter depth by planted density",
+    x = "Litter depth (cm)",
+    y = "Recruit density (1,000 recruits / ha)",
+    colour = "Planted density"
+  ) +
+  scale_colour_manual(values = interaction_palette_3, drop = FALSE) +
+  theme_minimal(base_size = 12)
+```
+
+## 11. Additional exploratory plots
+
+The plots below are useful as supporting diagnostics and ecological context. They should be treated as appendix material rather than core results.
+
+### 11.1 Recruit density by mine zone
+
+```{r appendix-density-by-zone, fig.width=8, fig.height=5}
+ggplot(data, aes(x = mine_zone, y = recruits12_density / 1000)) +
+  geom_boxplot(outlier.shape = 21) +
+  labs(
+    x = "Mine zone",
+    y = "Recruit density (1,000 recruits / ha)",
+    title = "Recruit density by mine zone"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+### 11.2 Raw litter-depth and canopy-closure relationships
+
+```{r appendix-litter-density, fig.width=8, fig.height=5}
+ggplot(data, aes(x = litter_depth, y = recruits12_density / 1000)) +
+  geom_point(size = 1.5, alpha = 0.7, position = "jitter") +
+  geom_smooth(method = lm, se = TRUE, linewidth = 1, alpha = 0.2) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Litter depth and recruit density",
+    y = "Recruit density (1,000 recruits / ha)",
+    x = "Litter depth (cm)"
+  )
+```
+
+```{r appendix-canopy-density, fig.width=8, fig.height=5}
+ggplot(data, aes(x = canopy_closure, y = recruits12_density / 1000)) +
+  geom_point(size = 1.5, alpha = 0.7, position = "jitter") +
+  geom_smooth(method = lm, se = TRUE, linewidth = 1, alpha = 0.2) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Canopy closure and recruit density",
+    y = "Recruit density (1,000 recruits / ha)",
+    x = "Canopy closure (%)"
+  )
+```
+
+## 12. Interpretation of final results
+
+### Recruit species richness
+
+Recruit richness was positively associated with successional age and canopy closure. The final model also retained interactions between planted-tree community composition, canopy closure, soil axis 2, old-growth forest area and mine zone. Ecologically, this indicates that recruitment diversity was not driven by a single factor. It depended on a combination of time since restoration, light conditions, soil context, planted-tree community structure and surrounding forest availability.
+
+### Recruit species composition
+
+Recruit PCoA 1 was strongly associated with soil axis 1, mine zone, successional age, planted-tree density and surrounding forest area. In the thesis interpretation, positive PCoA 1 values reflected *Psidium guianensis*-dominated recruitment, while negative values reflected *Myrcia splendens*-dominated recruitment.
+
+Recruit PCoA 2 was mainly explained by secondary forest area, soil axis 1 and their interaction. This supports the interpretation that surrounding secondary forests influenced recruit composition, especially where soil conditions created suitable establishment filters.
+
+### Recruit density
+
+Recruit density increased with successional age, declined along the cation-and-sand soil axis, and differed among mine zones. The two most management-relevant terms were the interactions between planted-tree density and the light-related variables. Planted-tree density interacted positively with canopy closure but negatively with litter depth, suggesting a trade-off in which planted-tree structure can facilitate recruitment under some canopy conditions but suppress recruitment where litter accumulation is high.
+
+## 13. Methods summary
+
+| Step | Implementation in the R workflow |
+|---|---|
+| Data import | `read_excel()` from the `canopy` sheet |
+| Ordination inputs | Soil PCA and species PCoA axes imported as model variables |
+| Distribution checks | `summary()`, `hist()`, `shapiro.test()` |
+| Transformations | log, arcsine-square-root, square-root and fourth-root transformations |
+| Standardisation | `scale()` applied to continuous variables |
+| Collinearity | `vif.lme()` custom function from the original script |
+| Random effects | GLS vs mine random intercept vs mine/area nested random intercept |
+| Variable selection | backward stepwise selection with `lmerTest::step()` |
+| Final estimation | `nlme::lme(..., method = "REML")` |
+| Main graphs | report-style coefficient plots from `estimates_errors.xlsx` |
+| Reproducibility graphs | live coefficient plots from fitted `lme` objects |
+| Interaction plots | retained interactions from the final models |
+
+## 14. Reference
+
+Villamonte Cuneo, G. O. (2020). *Forest restoration of Amazonian mine lands: Identifying factors driving tree recruitment*. Wageningen University & Research, Forest Ecology and Forest Management Group.

@@ -1,0 +1,459 @@
+---
+title: "Landsat NDVI Seasonality Analysis"
+author: "Gianfranco Villamonte Cuneo"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 5,
+  dpi = 120
+)
+```
+
+# Overview
+
+This document compiles a vegetation-index seasonality workflow originally developed for repeated environmental monitoring tasks. The workflow combines Google Earth Engine and R to extract, clean, visualize and decompose a Landsat-derived NDVI time series.
+
+The purpose of this analysis is to identify intra-annual vegetation seasonality and check whether there is a visible interannual NDVI trend. The workflow is based on public Landsat data and is presented here as a reproducible remote-sensing and ecological monitoring example.
+
+The workflow includes:
+
+- extraction of NDVI, NDWI and image-quality information in Google Earth Engine;
+- preparation of a monthly NDVI table exported from Google Earth Engine;
+- exploratory boxplots by month, quarter and year;
+- non-parametric tests for seasonal and interannual differences;
+- missing-value imputation with a Kalman filter;
+- seasonal-trend decomposition using Loess (STL);
+- visualization of known and imputed values, seasonal patterns and long-term trend components.
+
+# Google Earth Engine extraction
+
+The NDVI table used in this example was obtained from public Landsat imagery through Google Earth Engine. The original workflow was repeated across different projects by changing the area of interest, time window and index selection.
+
+The portfolio version uses a neutralized extraction template. Replace the area-of-interest coordinates and dates before running it in Google Earth Engine.
+
+```{js gee-template, eval=FALSE}
+// Landsat vegetation-index time-series extraction template for Google Earth Engine
+// Replace the AOI coordinates and dates before running.
+
+// 1. Define the area of interest (longitude/latitude in decimal degrees).
+var aoi = ee.Geometry.Rectangle([lon_min, lat_min, lon_max, lat_max]);
+
+// 2. Load Landsat 8 composite collections for vegetation and quality assessment.
+// This template follows the legacy workflow used for the original analysis.
+var ndviCollection = ee.ImageCollection('LANDSAT/LC08/C01/T1_8DAY_NDVI')
+  .filterDate('2013-02-01', '2021-08-31')
+  .select('NDVI');
+
+var ndwiCollection = ee.ImageCollection('LANDSAT/LC08/C01/T1_8DAY_NDWI')
+  .filterDate('2013-02-01', '2021-08-31')
+  .select('NDWI');
+
+var bqaCollection = ee.ImageCollection('LANDSAT/LC08/C01/T1_8DAY_TOA')
+  .filterDate('2013-02-01', '2021-08-31')
+  .select('BQA');
+
+// 3. Chart mean values within the AOI.
+var ndviOptions = {
+  lineWidth: 1,
+  title: 'NDVI variation',
+  vAxis: {title: 'NDVI'},
+  legend: {position: 'none'},
+  hAxis: {title: 'Date'}
+};
+
+var ndwiOptions = {
+  lineWidth: 1,
+  title: 'NDWI variation',
+  vAxis: {title: 'NDWI'},
+  legend: {position: 'none'},
+  hAxis: {title: 'Date'}
+};
+
+var bqaOptions = {
+  lineWidth: 1,
+  title: 'BQA variation',
+  vAxis: {title: 'BQA'},
+  legend: {position: 'none'},
+  hAxis: {title: 'Date'}
+};
+
+print(Chart.image.series(ndviCollection, aoi, ee.Reducer.mean(), 30).setOptions(ndviOptions));
+print(Chart.image.series(ndwiCollection, aoi, ee.Reducer.mean(), 30).setOptions(ndwiOptions));
+print(Chart.image.series(bqaCollection, aoi, ee.Reducer.mean(), 30).setOptions(bqaOptions));
+
+// 4. Visualize the AOI.
+Map.addLayer(aoi, {}, 'Area of interest');
+Map.centerObject(aoi, 10);
+```
+
+In the original workflow, image-quality information was reviewed to remove cloud-affected observations before calculating monthly NDVI values. The cleaned monthly NDVI table is the input used in the R sections below.
+
+# R setup
+
+```{r packages}
+packages <- c(
+  "readxl", "dplyr", "tidyr", "ggplot2", "viridis", "imputeTS",
+  "forecast", "lubridate", "scales", "knitr"
+)
+
+# Set a CRAN mirror before installing missing packages. This prevents knitting
+# errors in fresh R sessions where no default repository has been configured.
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+missing_packages <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages, dependencies = TRUE)
+}
+
+invisible(lapply(packages, library, character.only = TRUE))
+
+theme_set(theme_bw())
+```
+
+# Data import
+
+The example file was renamed to avoid project-specific naming:
+
+```{r file-config}
+data_file <- "landsat_ndvi_timeseries_example.xlsx"
+data_sheet <- "T2.4.1.1(Estacionalidad)"
+```
+
+The workbook contains a formatted table with title rows above the actual headers, so the import skips the first three rows.
+
+```{r import-data}
+raw_ndvi <- read_excel(
+  path = data_file,
+  sheet = data_sheet,
+  skip = 3
+)
+
+names(raw_ndvi) <- tolower(names(raw_ndvi))
+names(raw_ndvi) <- gsub("año", "anio", names(raw_ndvi), fixed = TRUE)
+names(raw_ndvi) <- gsub("í", "i", names(raw_ndvi), fixed = TRUE)
+names(raw_ndvi) <- gsub(" ", "_", names(raw_ndvi), fixed = TRUE)
+
+raw_ndvi <- raw_ndvi %>%
+  rename(
+    fecha = fecha,
+    mes = mes,
+    anio = anio,
+    trim = trimestre,
+    ndvi = ndvi
+  )
+
+head(raw_ndvi)
+```
+
+# Data preparation
+
+Dates exported from Excel are usually stored as serial numbers. The following code converts them into R dates and builds a complete monthly time series.
+
+```{r clean-data}
+excel_serial_to_date <- function(x) {
+  if (inherits(x, "Date")) return(x)
+  if (inherits(x, "POSIXct") || inherits(x, "POSIXt")) return(as.Date(x))
+  if (is.numeric(x)) return(as.Date(x, origin = "1899-12-30"))
+  as.Date(x)
+}
+
+ndvi_data <- raw_ndvi %>%
+  mutate(
+    fecha = excel_serial_to_date(fecha),
+    mes = as.integer(mes),
+    anio = as.integer(anio),
+    trim = as.integer(trim),
+    ndvi = as.numeric(ndvi),
+    month_date = as.Date(sprintf("%04d-%02d-01", anio, mes))
+  ) %>%
+  filter(!is.na(month_date)) %>%
+  arrange(month_date)
+
+# If the exported data contains more than one valid observation per month,
+# aggregate to a monthly mean. Missing months are retained as NA.
+monthly_ndvi <- ndvi_data %>%
+  group_by(month_date) %>%
+  summarise(
+    anio = first(anio),
+    mes = first(mes),
+    trim = first(trim),
+    ndvi = mean(ndvi, na.rm = TRUE),
+    n_valid = sum(!is.na(ndvi)),
+    .groups = "drop"
+  ) %>%
+  mutate(ndvi = ifelse(is.nan(ndvi), NA_real_, ndvi)) %>%
+  complete(
+    month_date = seq(min(month_date), max(month_date), by = "month")
+  ) %>%
+  mutate(
+    anio = ifelse(is.na(anio), lubridate::year(month_date), anio),
+    mes = ifelse(is.na(mes), lubridate::month(month_date), mes),
+    trim = ifelse(is.na(trim), lubridate::quarter(month_date), trim),
+    anio = as.integer(anio),
+    mes = as.integer(mes),
+    trim = as.integer(trim)
+  ) %>%
+  arrange(month_date)
+
+summary(monthly_ndvi$ndvi)
+```
+
+```{r data-preview}
+knitr::kable(head(monthly_ndvi, 12), caption = "First year of the monthly NDVI table used in the analysis.")
+```
+
+# Exploratory seasonal checks
+
+The first diagnostic step is to assess whether NDVI values differ across months or quarters. Because NDVI values are not expected to be normally distributed in this type of monthly ecological time series, non-parametric Kruskal-Wallis tests are used after checking normality.
+
+```{r statistical-checks}
+observed_ndvi <- monthly_ndvi %>% filter(!is.na(ndvi))
+
+normality_test <- shapiro.test(observed_ndvi$ndvi)
+kw_month <- kruskal.test(ndvi ~ factor(mes), data = observed_ndvi)
+kw_quarter <- kruskal.test(ndvi ~ factor(trim), data = observed_ndvi)
+kw_year <- kruskal.test(ndvi ~ factor(anio), data = observed_ndvi)
+
+list(
+  shapiro_wilk = normality_test,
+  kruskal_month = kw_month,
+  kruskal_quarter = kw_quarter,
+  kruskal_year = kw_year
+)
+```
+
+## NDVI by month
+
+```{r boxplot-month}
+observed_ndvi %>%
+  mutate(month_label = factor(month.abb[mes], levels = month.abb)) %>%
+  ggplot(aes(x = month_label, y = ndvi, fill = month_label)) +
+  geom_boxplot(alpha = 0.75, outlier.alpha = 0.8) +
+  scale_fill_viridis_d(option = "D") +
+  labs(
+    x = "Month",
+    y = "NDVI",
+    fill = "Month",
+    title = "Monthly NDVI distribution"
+  ) +
+  theme(legend.position = "none")
+```
+
+## NDVI by quarter
+
+```{r boxplot-quarter}
+observed_ndvi %>%
+  mutate(quarter_label = factor(paste0("Q", trim), levels = paste0("Q", 1:4))) %>%
+  ggplot(aes(x = quarter_label, y = ndvi, fill = quarter_label)) +
+  geom_boxplot(alpha = 0.75, outlier.alpha = 0.8) +
+  scale_fill_viridis_d(option = "D") +
+  labs(
+    x = "Quarter",
+    y = "NDVI",
+    fill = "Quarter",
+    title = "Quarterly NDVI distribution"
+  ) +
+  theme(legend.position = "none")
+```
+
+## NDVI by year
+
+```{r boxplot-year}
+observed_ndvi %>%
+  mutate(year_label = factor(anio)) %>%
+  ggplot(aes(x = year_label, y = ndvi, fill = year_label)) +
+  geom_boxplot(alpha = 0.75, outlier.alpha = 0.8) +
+  scale_fill_viridis_d(option = "D") +
+  labs(
+    x = "Year",
+    y = "NDVI",
+    fill = "Year",
+    title = "Interannual NDVI distribution"
+  ) +
+  theme(legend.position = "none")
+```
+
+# Monthly time series
+
+```{r time-series}
+start_year <- lubridate::year(min(monthly_ndvi$month_date))
+start_month <- lubridate::month(min(monthly_ndvi$month_date))
+end_year <- lubridate::year(max(monthly_ndvi$month_date))
+end_month <- lubridate::month(max(monthly_ndvi$month_date))
+
+ndvi_ts <- ts(
+  monthly_ndvi$ndvi,
+  start = c(start_year, start_month),
+  end = c(end_year, end_month),
+  frequency = 12
+)
+
+ndvi_ts
+```
+
+```{r missingness}
+missing_summary <- as.data.frame(statsNA(ndvi_ts, bins = 4, print_only = FALSE))
+knitr::kable(head(missing_summary, 8), caption = "Missing-value summary for the monthly NDVI time series.")
+```
+
+# Kalman imputation
+
+Cloud filtering and satellite acquisition gaps can leave missing observations. The original workflow used Kalman filtering through `imputeTS::na_kalman()` to complete the monthly time series before decomposition.
+
+```{r kalman-imputation}
+ndvi_imputed <- na_kalman(
+  ndvi_ts,
+  model = "StructTS",
+  smooth = TRUE
+)
+
+monthly_ndvi <- monthly_ndvi %>%
+  mutate(
+    ndvi_imputed = as.numeric(ndvi_imputed),
+    value_type = ifelse(is.na(ndvi), "Imputed", "Observed")
+  )
+```
+
+```{r imputation-plot}
+ggplot_na_imputations(
+  x_with_na = ndvi_ts,
+  x_with_imputations = ndvi_imputed,
+  x_axis_labels = monthly_ndvi$month_date,
+  title = "Observed and Kalman-imputed NDVI values",
+  subtitle = "Missing observations are completed before seasonal decomposition",
+  xlab = "Time",
+  ylab = "NDVI",
+  label_known = "Observed values",
+  label_imputations = "Imputed values",
+  theme = ggplot2::theme_linedraw()
+)
+```
+
+## Optional imputation validation
+
+The true value of a missing observation is unknown, so imputation accuracy cannot be measured directly for genuinely missing dates. As a basic validation check, the code below masks a subset of observed values, imputes them, and compares the imputed values against the withheld observations.
+
+```{r imputation-validation}
+set.seed(123)
+observed_index <- which(!is.na(ndvi_ts))
+validation_size <- max(1, floor(length(observed_index) * 0.2))
+validation_index <- sample(observed_index, validation_size)
+
+ndvi_masked <- ndvi_ts
+ndvi_masked[validation_index] <- NA
+
+ndvi_validation_imputed <- na_kalman(
+  ndvi_masked,
+  model = "StructTS",
+  smooth = TRUE
+)
+
+actual_values <- as.numeric(ndvi_ts[validation_index])
+predicted_values <- as.numeric(ndvi_validation_imputed[validation_index])
+
+mape <- mean(abs((actual_values - predicted_values) / actual_values), na.rm = TRUE) * 100
+mae <- mean(abs(actual_values - predicted_values), na.rm = TRUE)
+rmse <- sqrt(mean((actual_values - predicted_values)^2, na.rm = TRUE))
+
+validation_metrics <- tibble::tibble(
+  metric = c("MAE", "RMSE", "MAPE (%)"),
+  value = c(mae, rmse, mape)
+)
+
+knitr::kable(validation_metrics, digits = 4, caption = "Validation metrics from artificially withheld observed NDVI values.")
+```
+
+# STL decomposition
+
+Seasonal and Trend decomposition using Loess (STL) separates the completed time series into:
+
+- a seasonal component, representing recurring intra-annual variation;
+- a trend component, representing longer-term change;
+- a remainder component, representing residual variation.
+
+```{r stl-decomposition}
+ndvi_stl <- stl(ndvi_imputed, s.window = 12)
+
+stl_components <- as.data.frame(ndvi_stl$time.series) %>%
+  mutate(
+    month_date = monthly_ndvi$month_date,
+    anio = monthly_ndvi$anio,
+    mes = monthly_ndvi$mes
+  )
+
+head(stl_components)
+```
+
+```{r stl-base-plot, fig.height=6}
+plot(ndvi_stl, main = "STL decomposition of monthly NDVI")
+```
+
+## Seasonal pattern
+
+The seasonal component shows the typical monthly deviation from the long-term NDVI signal. Positive values indicate months where vegetation vigor is above the average seasonal baseline, while negative values indicate months below that baseline.
+
+```{r seasonal-pattern}
+seasonal_ts <- ts(
+  stl_components$seasonal,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+
+forecast::ggseasonplot(seasonal_ts, year.labels = FALSE) +
+  labs(
+    x = "Month",
+    y = "Monthly NDVI seasonal component",
+    color = "Year",
+    title = "Seasonal NDVI pattern"
+  ) +
+  theme_bw() +
+  theme(legend.position = "right")
+```
+
+## Interannual trend
+
+```{r trend-plot}
+ggplot(stl_components, aes(x = month_date, y = trend)) +
+  geom_line(aes(color = "STL trend component"), linewidth = 0.7) +
+  geom_smooth(aes(color = "Loess smooth"), se = FALSE, linewidth = 0.8) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(
+    x = "Year",
+    y = "NDVI trend component",
+    color = "Series",
+    title = "Interannual NDVI trend component"
+  ) +
+  theme(legend.position = "right")
+```
+
+# Interpretation guide
+
+Use the outputs as follows:
+
+- A significant Kruskal-Wallis test by month or quarter supports the presence of seasonal NDVI variation.
+- A non-significant Kruskal-Wallis test by year suggests no strong interannual shift in the distribution of NDVI values over the period analysed.
+- The Kalman-imputed time series is used to support continuous decomposition, not to replace field-based ecological interpretation.
+- The STL seasonal component helps identify months where vegetation vigor is consistently above or below the long-term average.
+- The trend component should be interpreted cautiously because NDVI can respond to climate variability, vegetation phenology, land-cover change, image quality and sensor-processing effects.
+
+# Notes on public use
+
+This example is based on public Landsat-derived vegetation-index data. Project-specific names and assets were removed from the compiled workflow. The repository should be read as a methodological example of vegetation seasonality analysis, not as a formal assessment of any specific site, company or mining operation.
+
+# Session information
+
+```{r session-info, echo=FALSE, collapse=TRUE}
+sessionInfo()
+```

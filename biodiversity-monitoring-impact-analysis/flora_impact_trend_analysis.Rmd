@@ -1,0 +1,275 @@
+---
+title: "Protected Flora Monitoring: Impact and Trend Analysis"
+author: "Gianfranco Villamonte Cuneo"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 6
+)
+
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+packages <- c(
+  "readr", "dplyr", "tidyr", "ggplot2", "viridis",
+  "trend", "knitr"
+)
+
+missing_packages <- setdiff(packages, rownames(installed.packages()))
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages)
+}
+
+invisible(lapply(packages, library, character.only = TRUE))
+
+theme_set(theme_bw())
+```
+
+# Purpose
+
+This document presents a generalized and anonymized workflow for analysing protected flora monitoring data from repeated field surveys.
+
+The workflow demonstrates how species-density observations can be processed, summarized and assessed through:
+
+- data preparation and filtering;
+- density comparisons by vegetation formation;
+- summary tables by species and formation;
+- temporal aggregation by survey period;
+- Mann-Kendall trend tests;
+- Sen's slope estimates;
+- faceted visualizations of species-level density trends.
+
+The dataset included in this repository is synthetic and anonymized. It preserves the structure of a typical flora monitoring dataset, but it does not reproduce project-level observations, site names, station names, client names, or confidential records.
+
+# Data input
+
+```{r data-input}
+flora_raw <- readr::read_csv("data/flora_monitoring_example.csv", show_col_types = FALSE)
+
+glimpse(flora_raw)
+```
+
+The input table contains one row per survey record. The key fields are:
+
+- `year`: survey year;
+- `season`: survey season;
+- `evaluation`: numeric survey period, with half-year steps;
+- `method`: field survey method;
+- `vegetation_formation`: anonymized vegetation formation;
+- `station_id`: anonymized survey station;
+- `species`: anonymized protected species name;
+- `density_ind_ha`: density expressed as individuals per hectare.
+
+# Data preparation
+
+The monitoring records are filtered to the target survey method, records with missing formation or density values are removed, and density is aggregated by survey period, species, vegetation formation and station.
+
+```{r data-preparation}
+flora <- flora_raw %>%
+  filter(method == "Nearest-neighbor density survey") %>%
+  drop_na(vegetation_formation, density_ind_ha) %>%
+  group_by(year, season, evaluation, species, vegetation_formation, station_id) %>%
+  summarise(density_ind_ha = sum(density_ind_ha), .groups = "drop") %>%
+  mutate(
+    season = factor(season, levels = c("Wet season", "Dry season")),
+    vegetation_formation = factor(vegetation_formation),
+    species = factor(species)
+  )
+
+flora %>%
+  summarise(
+    records = n(),
+    years = n_distinct(year),
+    survey_periods = n_distinct(evaluation),
+    formations = n_distinct(vegetation_formation),
+    stations = n_distinct(station_id),
+    species = n_distinct(species)
+  ) %>%
+  knitr::kable(caption = "Summary of anonymized flora monitoring records")
+```
+
+# Density by vegetation formation
+
+The first exploratory visualization compares species density across vegetation formations. A log-scale is used because density values usually vary strongly among protected flora species.
+
+```{r density-boxplots, fig.height=8}
+flora_positive <- flora %>%
+  filter(density_ind_ha > 0)
+
+ggplot(
+  flora_positive,
+  aes(x = vegetation_formation, y = density_ind_ha, fill = vegetation_formation)
+) +
+  geom_boxplot(alpha = 0.75, outlier.alpha = 0.4) +
+  scale_y_log10() +
+  scale_fill_viridis_d(option = "D", alpha = 0.8, name = "Vegetation formation") +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(
+    x = NULL,
+    y = "Density (individuals/ha, log scale)",
+    title = "Protected flora density by vegetation formation"
+  ) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    strip.text = element_text(face = "italic")
+  )
+```
+
+# Mean density by species and formation
+
+```{r mean-density-table}
+mean_density <- flora %>%
+  group_by(species, vegetation_formation) %>%
+  summarise(
+    mean_density_ind_ha = round(mean(density_ind_ha, na.rm = TRUE), 3),
+    median_density_ind_ha = round(median(density_ind_ha, na.rm = TRUE), 3),
+    observations = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(species, vegetation_formation)
+
+knitr::kable(
+  mean_density,
+  caption = "Mean and median density by protected species and vegetation formation"
+)
+```
+
+# Temporal trend dataset
+
+Density values are averaged by species, vegetation formation and survey period before trend testing. A full survey-period grid is created so that missing combinations are kept as missing values rather than silently removed.
+
+```{r trend-dataset}
+trend_data <- flora %>%
+  group_by(year, season, evaluation, species, vegetation_formation) %>%
+  summarise(mean_density_ind_ha = mean(density_ind_ha, na.rm = TRUE), .groups = "drop") %>%
+  arrange(species, vegetation_formation, evaluation)
+
+survey_grid <- expand_grid(
+  evaluation = sort(unique(flora$evaluation)),
+  species = levels(flora$species),
+  vegetation_formation = levels(flora$vegetation_formation)
+)
+
+trend_data_full <- survey_grid %>%
+  left_join(trend_data, by = c("evaluation", "species", "vegetation_formation"))
+
+head(trend_data_full) %>%
+  knitr::kable(caption = "Trend-analysis table with complete survey-period grid")
+```
+
+# Mann-Kendall trend analysis
+
+The Mann-Kendall test is used to detect monotonic trends through time. Sen's slope is used to estimate the direction and magnitude of change. Species-formation combinations with fewer than three observations are skipped.
+
+```{r mann-kendall-functions}
+mk_safe <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) < 3) return(list(p_value = NA_real_))
+  test <- trend::mk.test(x)
+  list(p_value = unname(test$p.value))
+}
+
+sen_safe <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) < 3) {
+    return(list(sen_slope = NA_real_, conf_low = NA_real_, conf_high = NA_real_))
+  }
+  slope <- trend::sens.slope(x)
+  list(
+    sen_slope = unname(slope$estimates),
+    conf_low = unname(slope$conf.int[1]),
+    conf_high = unname(slope$conf.int[2])
+  )
+}
+```
+
+```{r mann-kendall-results}
+trend_results <- trend_data_full %>%
+  arrange(species, vegetation_formation, evaluation) %>%
+  group_by(species, vegetation_formation) %>%
+  summarise(
+    observations = sum(!is.na(mean_density_ind_ha)),
+    p_value = mk_safe(mean_density_ind_ha)$p_value,
+    sen_slope = sen_safe(mean_density_ind_ha)$sen_slope,
+    sen_conf_low = sen_safe(mean_density_ind_ha)$conf_low,
+    sen_conf_high = sen_safe(mean_density_ind_ha)$conf_high,
+    trend_direction = case_when(
+      is.na(sen_slope) ~ "Insufficient data",
+      sen_slope > 0 ~ "Positive",
+      sen_slope < 0 ~ "Negative",
+      TRUE ~ "No change"
+    ),
+    significant = case_when(
+      is.na(p_value) ~ "Not tested",
+      p_value <= 0.05 ~ "Yes",
+      TRUE ~ "No"
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    p_value = round(p_value, 3),
+    sen_slope = round(sen_slope, 3),
+    sen_conf_low = round(sen_conf_low, 3),
+    sen_conf_high = round(sen_conf_high, 3)
+  ) %>%
+  arrange(species, vegetation_formation)
+
+knitr::kable(
+  trend_results,
+  caption = "Mann-Kendall and Sen's slope results by protected species and vegetation formation"
+)
+```
+
+# Density trends by vegetation formation
+
+The plots below show monitoring observations across survey periods. Points represent station-level density observations. Lines show smoothed tendencies to support visual interpretation; formal trend direction is assessed through the Mann-Kendall and Sen's slope table above.
+
+```{r trend-plots, fig.height=8}
+ggplot(
+  flora_positive,
+  aes(x = evaluation, y = density_ind_ha, color = density_ind_ha)
+) +
+  geom_point(alpha = 0.7, size = 1.4) +
+  geom_smooth(aes(group = species), method = "loess", se = FALSE, color = "black", linewidth = 0.4) +
+  scale_y_log10() +
+  scale_color_viridis_c(option = "D", name = "Density (ind./ha)") +
+  facet_grid(vegetation_formation ~ species, scales = "free_y") +
+  labs(
+    x = "Survey period",
+    y = "Density (individuals/ha, log scale)",
+    title = "Temporal density patterns by protected species and vegetation formation"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    strip.text.x = element_text(face = "italic")
+  )
+```
+
+# Interpretation notes
+
+This workflow is designed for repeated biodiversity monitoring contexts where the objective is to evaluate whether protected flora species show meaningful changes over time or differences across vegetation formations.
+
+A few methodological considerations are important:
+
+- zero values and sparse observations need careful treatment, especially when log scales are used;
+- trend tests should only be interpreted when enough repeated observations exist;
+- station-level variability can be high, so visual patterns should be interpreted together with formal trend statistics;
+- non-significant Mann-Kendall tests do not prove absence of change; they indicate that a monotonic trend was not detected given the available time series;
+- ecological interpretation should consider survey effort, method consistency, seasonality, disturbance history and species detectability.
+
+# Reproducibility information
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```

@@ -1,0 +1,10 @@
+zone,season,vegetation_formations,species_columns,mean_pairwise_similarity
+Zone A,Dry season,4,24,0.5085934134441648
+Zone A,Wet season,4,24,0.4760566443093681
+Zone A,Winter,4,24,0.48111591562931566
+Zone B,Dry season,4,24,0.43430279962352986
+Zone B,Wet season,4,24,0.4942602007082376
+Zone B,Winter,4,24,0.4288790438330845
+Zone C,Dry season,4,24,0.5162799127624791
+Zone C,Wet season,4,24,0.4631504268723799
+Zone C,Winter,4,24,0.45982073872957113
