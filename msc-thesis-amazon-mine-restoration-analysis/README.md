@@ -120,17 +120,17 @@ amazon-mine-restoration-analysis/
 
 ├── README.md
 
-├── thesis\_analysis\_compiled.Rmd
+├── thesis_analysis_compiled.Rmd
 
-├── thesis\_analysis\_compiled.html
+├── thesis_analysis_compiled.html
 
-└── estimates\_errors.xlsx
+└── estimates_errors.xlsx
 
 ```
 
 
 
-### `thesis\_analysis\_compiled.html`
+### `thesis_analysis_compiled.html`
 
 
 
@@ -142,7 +142,7 @@ It contains the compiled workflow, explanation of analytical steps, model output
 
 
 
-### `thesis\_analysis\_compiled.Rmd`
+### `thesis_analysis_compiled.Rmd`
 
 
 
@@ -154,7 +154,7 @@ The file documents how the original thesis analysis was organised into a readabl
 
 
 
-### `estimates\_errors.xlsx`
+### `estimates_errors.xlsx`
 
 
 
