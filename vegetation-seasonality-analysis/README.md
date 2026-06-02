@@ -1,14 +1,14 @@
-# Landsat Vegetation Seasonality Analysis
+# Vegetation Seasonality Analysis
 
-This repository contains a compiled workflow for analysing vegetation seasonality from Landsat-derived NDVI time series.
+This repository contains a compiled workflow for analysing vegetation seasonality from vegetation index time series satellite imagery available on Google Earth Engine.
 
-The workflow was adapted from repeated environmental monitoring analyses where Google Earth Engine was used to extract vegetation-index values, and R was used to clean, visualize, impute, decompose, and interpret seasonal vegetation patterns.
+The workflow was adapted from repeated environmental monitoring analyses where Google Earth Engine was used to extract vegetation-index values (for this particular example, NDVI from Landsat imagery was used), and R was used to clean, visualize, impute, decompose, and interpret seasonal vegetation patterns.
 
 The project is intended as a compact portfolio example of remote sensing, ecological time-series analysis, and reproducible reporting.
 
 ## Project context
 
-Vegetation indices such as NDVI are commonly used as proxies for vegetation vigour, greenness, and seasonal biological response. In dry or seasonally variable ecosystems, NDVI often responds to precipitation with a delay because vegetation response depends on infiltration, soil moisture, germination, resprouting, vegetative growth, and reproductive development.
+Vegetation indices such as NDVI or EVI are commonly used as proxies for vegetation vigour, greenness, and seasonal biological response. In dry or seasonally variable ecosystems, NDVI often responds to precipitation with a delay because vegetation response depends on infiltration, soil moisture, germination, resprouting, vegetative growth, and reproductive development.
 
 This workflow uses public Landsat imagery to evaluate whether vegetation-index values show consistent intra-annual seasonality and whether there is evidence of interannual change over the analysed period.
 

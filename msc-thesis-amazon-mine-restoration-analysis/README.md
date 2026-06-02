@@ -1,4 +1,4 @@
-\# Amazon Mine Restoration Analysis
+# Amazon Mine Restoration Analysis
 
 
 
@@ -6,7 +6,7 @@ This repository contains a compiled and documented version of the statistical an
 
 
 
-\*\*Forest restoration of Amazonian mine lands: Identifying factors driving tree recruitment\*\*
+**Forest restoration of Amazonian mine lands: Identifying factors driving tree recruitment**
 
 Gianfranco Villamonte Cuneo, MSc Forest and Nature Conservation, Wageningen University \& Research, 2020
 
@@ -16,7 +16,7 @@ The study assessed ecological and management drivers of tree recruitment in rest
 
 
 
-\## Project context
+## Project context
 
 
 
@@ -32,7 +32,7 @@ The original thesis was based on 86 monitoring plots distributed across deactiva
 
 
 
-\## Research questions
+## Research questions
 
 
 
@@ -52,27 +52,27 @@ The explanatory variables considered in the models include:
 
 
 
-\* successional age
+* successional age
 
-\* canopy closure
+* canopy closure
 
-\* litter depth
+* litter depth
 
-\* soil PCA axes
+* soil PCA axes
 
-\* mine-zone categories
+* mine-zone categories
 
-\* planted tree density
+* planted tree density
 
-\* planted species richness
+* planted species richness
 
-\* planted species composition
+* planted species composition
 
-\* surrounding secondary and old-growth forest area
+* surrounding secondary and old-growth forest area
 
 
 
-\## Methods overview
+## Methods overview
 
 
 
@@ -80,29 +80,29 @@ The compiled analysis includes:
 
 
 
-\* data preparation logic
+* data preparation logic
 
-\* exploratory checks
+* exploratory checks
 
-\* transformation and standardisation of continuous variables
+* transformation and standardisation of continuous variables
 
-\* collinearity checks
+* collinearity checks
 
-\* linear mixed-effects model fitting
+* linear mixed-effects model fitting
 
-\* mine identity as a random effect
+* mine identity as a random effect
 
-\* backward model simplification
+* backward model simplification
 
-\* REML refitting of final models
+* REML refitting of final models
 
-\* marginal and conditional R² estimates
+* marginal and conditional R² estimates
 
-\* coefficient plots
+* coefficient plots
 
-\* selected interaction plots
+* selected interaction plots
 
-\* interpretation of model outputs in ecological terms
+* interpretation of model outputs in ecological terms
 
 
 
@@ -110,7 +110,7 @@ The main modelling approach follows the thesis methods: continuous variables wer
 
 
 
-\## Main files
+## Main files
 
 
 
@@ -130,7 +130,7 @@ amazon-mine-restoration-analysis/
 
 
 
-\### `thesis\_analysis\_compiled.html`
+### `thesis\_analysis\_compiled.html`
 
 
 
@@ -142,7 +142,7 @@ It contains the compiled workflow, explanation of analytical steps, model output
 
 
 
-\### `thesis\_analysis\_compiled.Rmd`
+### `thesis\_analysis\_compiled.Rmd`
 
 
 
@@ -154,7 +154,7 @@ The file documents how the original thesis analysis was organised into a readabl
 
 
 
-\### `estimates\_errors.xlsx`
+### `estimates\_errors.xlsx`
 
 
 
@@ -166,7 +166,7 @@ This file does not contain row-level field observations.
 
 
 
-\## Data availability
+## Data availability
 
 
 
@@ -186,7 +186,7 @@ The included `estimates\_errors.xlsx` file contains only model coefficients and 
 
 
 
-\## Key outputs
+## Key outputs
 
 
 
@@ -194,45 +194,43 @@ The analysis produces and discusses:
 
 
 
-\* final coefficient plot for recruit species richness
+* final coefficient plot for recruit species richness
 
-\* final coefficient plot for recruit species composition, PCoA axis 1
+* final coefficient plot for recruit species composition, PCoA axis 1
 
-\* final coefficient plot for recruit species composition, PCoA axis 2
+* final coefficient plot for recruit species composition, PCoA axis 2
 
-\* final coefficient plot for recruit density
+* final coefficient plot for recruit density
 
-\* selected interaction plots from final models
+* selected interaction plots from final models
 
-\* ecological interpretation of seed availability, soil conditions, light availability, and mine-zone effects
-
-
-
-\## Technical skills demonstrated
+* ecological interpretation of seed availability, soil conditions, light availability, and mine-zone effects
 
 
 
-This project demonstrates applied skills in:
+## Technical skills demonstrated
 
 
 
-\* ecological data analysis
+This thesis project demonstrates applied skills in:
 
-\* restoration ecology
 
-\* statistical modelling
 
-\* linear mixed-effects models
+* ecological data analysis
 
-\* model simplification and interpretation
+* restoration ecology
 
-\* data transformation and standardisation
+* statistical modelling
 
-\* R Markdown reporting
+* linear mixed-effects models
 
-\* reproducible analytical documentation
+* model simplification and interpretation
 
-\* visualisation with `ggplot2`
+* data transformation and standardisation
+
+* reproducible analytical documentation
+
+* visualisation with `ggplot2`
 
 
 
@@ -240,33 +238,33 @@ Main R packages used include:
 
 
 
-\* `nlme`
+* `nlme`
 
-\* `lme4`
+* `lme4`
 
-\* `lmerTest`
+* `lmerTest`
 
-\* `MuMIn`
+* `MuMIn`
 
-\* `ggplot2`
+* `ggplot2`
 
-\* `dplyr`
+* `dplyr`
 
-\* `readxl`
-
-
-
-\## Thesis reference
+* `readxl`
 
 
 
-Villamonte Cuneo, G. O. (2020). \*Forest restoration of Amazonian mine lands: Identifying factors driving tree recruitment\*. MSc thesis, Forest Ecology and Forest Management Group, Wageningen University \& Research.
+## Thesis reference
 
 
 
-\## Author
+Villamonte Cuneo, G. O. (2020). *Forest restoration of Amazonian mine lands: Identifying factors driving tree recruitment*. MSc thesis, Forest Ecology and Forest Management Group, Wageningen University \& Research.
 
 
 
-\*\*Gianfranco Villamonte Cuneo\*\*
+## Author
+
+
+
+**Gianfranco Villamonte Cuneo**
 

@@ -27,7 +27,9 @@ This GitHub profile contains selected portfolio examples. Some professional work
 ### 🌳 1. Amazon mine restoration analysis
 
 **Repository:** [`msc-thesis-amazon-mine-restoration-analysis`](https://github.com/GianVillamonte/portfolio/tree/main/msc-thesis-amazon-mine-restoration-analysis)
+
 **Methods:** linear mixed-effects models, model selection, ecological interpretation  
+
 **Context:** MSc thesis, Wageningen University & Research
 
 This project compiles the statistical analysis from my MSc thesis on tree recruitment in restored Amazonian mine lands. It evaluates how ecological and management factors influence recruit species richness, recruit species composition and recruit density across restored mine plots.
@@ -47,7 +49,9 @@ Related research output: [MSc thesis](https://doi.org/10.13140/RG.2.2.36839.2704
 ### 🛰️ 2. Vegetation seasonality analysis
 
 **Repository:** [`vegetation-seasonality-analysis`](https://github.com/GianVillamonte/portfolio/tree/main/vegetation-seasonality-analysis)
+
 **Methods:** Google Earth Engine, Landsat NDVI, Kalman imputation, STL decomposition  
+
 **Context:** anonymized workflow adapted from repeated analyses used to define the ideal fieldwork timing for biodiversity monitoring and baseline assessments
 
 This project demonstrates a workflow for extracting and analysing vegetation-index time series from public Landsat imagery. Google Earth Engine is used to obtain NDVI time series, while R is used to clean, visualize, impute and decompose the data.
@@ -65,7 +69,9 @@ Main elements:
 ### 🌿 3. Biodiversity monitoring impact analysis
 
 **Repository:** [`biodiversity-monitoring-impact-analysis`](https://github.com/GianVillamonte/portfolio/tree/main/biodiversity-monitoring-impact-analysis)
+
 **Methods:** biodiversity monitoring data wrangling, protected flora density analysis, Mann-Kendall trends, Sen's slope  
+
 **Context:** anonymized example adapted from environmental impact assessment work
 
 This project demonstrates how applied biodiversity monitoring data can be processed and interpreted for impact assessment. The public version uses anonymized/synthetic data to preserve the structure of the workflow without exposing project-level monitoring data.
@@ -85,7 +91,9 @@ Main elements:
 ### 📈 4. Species-area and community similarity analysis
 
 **Repository:** [`species-area-similarity-analysis`](https://github.com/GianVillamonte/portfolio/tree/main/species-area-similarity-analysis)
+
 **Methods:** species-accumulation curves, Chao-2 richness estimation, Jaccard similarity, clustering, dendrograms  
+
 **Context:** anonymized biodiversity monitoring workflow
 
 This project demonstrates automated biodiversity analysis across multiple vegetation formations and seasons. It converts long-format monitoring data into community matrices, generates species-accumulation curves and estimates compositional similarity among vegetation formations.
