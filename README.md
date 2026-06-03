@@ -9,7 +9,6 @@ I work at the intersection of ecology, biodiversity monitoring, geospatial analy
 
 This GitHub profile contains selected portfolio examples. Some professional work from product sustainability assessment, LCA automation and venture development cannot be shared publicly because it was developed in commercial or proprietary contexts. Where needed, portfolio examples are anonymized or synthetic while preserving the analytical structure.
 
----
 
 ## Research and technical focus
 
@@ -20,7 +19,6 @@ This GitHub profile contains selected portfolio examples. Some professional work
 - Nature, climate and land-use data
 - Product sustainability assessment, LCA and MRV logic
 
----
 
 ## Portfolio projects
 
@@ -44,7 +42,6 @@ Main elements:
 
 Related research output: [MSc thesis](https://doi.org/10.13140/RG.2.2.36839.27044)
 
----
 
 ### 🛰️ 2. Vegetation seasonality analysis
 
@@ -64,7 +61,6 @@ Main elements:
 - STL seasonal and trend decomposition using Loess
 - visualization of intra-annual and interannual vegetation dynamics
 
----
 
 ### 🌿 3. Biodiversity monitoring impact analysis
 
@@ -86,7 +82,6 @@ Main elements:
 - Sen's slope estimates
 - temporal trend visualization
 
----
 
 ### 📈 4. Species-area and community similarity analysis
 
@@ -107,7 +102,6 @@ Main elements:
 - average-linkage clustering
 - dendrogram generation
 
----
 
 ## Selected research outputs
 
@@ -139,7 +133,6 @@ Science of the Total Environment, 2022
 
 This work reviewed long-term agroforestry research trends in Peru and Colombia. It included database standardisation, duplicate removal, topic classification and research-trend visualization.
 
----
 
 ## Notes on data availability
 
@@ -154,7 +147,6 @@ For this reason, several repositories use one of the following approaches:
 
 The goal is to show the analytical workflow without exposing confidential or project-specific information.
 
----
 
 ## 📬 Contact
 
