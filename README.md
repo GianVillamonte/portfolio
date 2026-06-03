@@ -1,4 +1,4 @@
-# 👋 Gianfranco Villamonte Cuneo
+# Gianfranco Villamonte Cuneo
 
 **Ecology | Sustainability impact assessment | Data science | Geospatial analysis**  
 📍 Utrecht, Netherlands  
@@ -11,7 +11,7 @@ This GitHub profile contains selected portfolio examples. Some professional work
 
 ---
 
-## 🔎 Research and technical focus
+## Research and technical focus
 
 - Biodiversity and ecological monitoring
 - Restoration ecology and tropical forest recovery
@@ -22,7 +22,7 @@ This GitHub profile contains selected portfolio examples. Some professional work
 
 ---
 
-## 📁 Portfolio projects
+## Portfolio projects
 
 ### 🌳 1. Amazon mine restoration analysis
 
@@ -109,15 +109,15 @@ Main elements:
 
 ---
 
-## 📚 Selected research outputs
+## Selected research outputs
 
-### 🎓 MSc thesis
+### MSc thesis
 
 **Forest restoration of Amazonian mine lands: Identifying factors driving tree recruitment**  
 Wageningen University & Research, 2020  
 [https://doi.org/10.13140/RG.2.2.36839.27044](https://doi.org/10.13140/RG.2.2.36839.27044)
 
-### 🌲 BSc thesis
+### BSc thesis
 
 **Ecological niche modelling of Peruvian Podocarp species under climate-change scenarios**  
 Universidad Ricardo Palma  
@@ -125,13 +125,13 @@ Universidad Ricardo Palma
 
 Methods included Maxent ecological niche modelling, GIS-based climate scenario analysis and protected-area overlay assessment.
 
-### 📝 Publication
+### Publication
 
 **Circular food systems and agroforestry-related sustainability transitions in Peru and Colombia**  
 Science of the Total Environment, 2022  
 [https://doi.org/10.1016/j.scitotenv.2022.156376](https://doi.org/10.1016/j.scitotenv.2022.156376)
 
-### 🌱 Presentation
+### Presentation
 
 **Five-decade trends of agroforestry research in Peru and Colombia**  
 5th World Agroforestry Congress  
@@ -141,7 +141,7 @@ This work reviewed long-term agroforestry research trends in Peru and Colombia. 
 
 ---
 
-## 🔐 Notes on data availability
+## Notes on data availability
 
 Some datasets used in professional and academic work cannot be shared publicly because they originate from consulting projects, restoration monitoring, commercial sustainability assessment systems, or venture-development contexts.
 
